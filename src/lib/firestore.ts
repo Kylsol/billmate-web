@@ -5,14 +5,24 @@ import {
   serverTimestamp,
   collection,
   addDoc,
+  updateDoc,
+  arrayUnion,
 } from "firebase/firestore";
 import { db } from "./firebase";
+
+export type UserHouseholdSummary = { id: string; name: string };
 
 export type UserProfile = {
   uid: string;
   displayName: string;
   email: string;
-  householdId: string | null;
+
+  preferredName: string | null;
+
+  householdIds: string[];
+  households: UserHouseholdSummary[];
+  activeHouseholdId: string | null;
+
   createdAt?: unknown;
   updatedAt?: unknown;
 };
@@ -32,17 +42,27 @@ export async function upsertUserProfile(params: {
       uid,
       displayName,
       email,
-      householdId: null,
+
+      preferredName: null,
+
+      householdIds: [],
+      households: [],
+      activeHouseholdId: null,
+
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     } satisfies UserProfile);
     return;
   }
 
-  // Update basics (keeps profile fresh)
+  // Keep preferredName as-is for existing users
   await setDoc(
     ref,
-    { displayName, email, updatedAt: serverTimestamp() },
+    {
+      displayName,
+      email,
+      updatedAt: serverTimestamp(),
+    },
     { merge: true }
   );
 }
@@ -53,23 +73,27 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   return snap.exists() ? (snap.data() as UserProfile) : null;
 }
 
-export async function setUserHousehold(uid: string, householdId: string) {
-  const ref = doc(db, "users", uid);
-  await setDoc(
-    ref,
-    { householdId, updatedAt: serverTimestamp() },
-    { merge: true }
-  );
+export async function setActiveHousehold(uid: string, householdId: string) {
+  await updateDoc(doc(db, "users", uid), {
+    activeHouseholdId: householdId,
+    updatedAt: serverTimestamp(),
+  });
 }
 
-/**
- * Creates a household and makes creator admin.
- * MVP: runs client-side. We'll harden with Cloud Functions + Rules later.
- */
+export async function setPreferredName(uid: string, preferredName: string) {
+  const name = preferredName.trim();
+  if (!name) throw new Error("Name cannot be blank.");
+
+  await updateDoc(doc(db, "users", uid), {
+    preferredName: name,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function createHousehold(params: {
   name: string;
   creatorUid: string;
-  creatorDisplayName: string;
+  creatorDisplayName: string; // for now (we'll switch to preferredName in the UI flow)
   creatorEmail: string;
 }) {
   const { name, creatorUid, creatorDisplayName, creatorEmail } = params;
@@ -81,9 +105,8 @@ export async function createHousehold(params: {
     currency: "USD",
   });
 
-  const memberRef = doc(db, "households", householdRef.id, "members", creatorUid);
-
-  await setDoc(memberRef, {
+  // Add creator as admin member
+  await setDoc(doc(db, "households", householdRef.id, "members", creatorUid), {
     uid: creatorUid,
     displayName: creatorDisplayName,
     email: creatorEmail,
@@ -92,7 +115,60 @@ export async function createHousehold(params: {
     isActive: true,
   });
 
-  await setUserHousehold(creatorUid, householdRef.id);
+  // Add household to user's list (multi-home)
+  await updateDoc(doc(db, "users", creatorUid), {
+    householdIds: arrayUnion(householdRef.id),
+    households: arrayUnion({ id: householdRef.id, name }),
+    activeHouseholdId: householdRef.id,
+    updatedAt: serverTimestamp(),
+  });
 
   return householdRef.id;
+}
+
+import { getDocs } from "firebase/firestore";
+
+export type HouseholdDoc = {
+  id: string;
+  name: string;
+  createdByUid: string;
+  currency?: string;
+};
+
+export type MemberDoc = {
+  uid: string;
+  displayName: string;
+  email: string;
+  role: "admin" | "member";
+  isActive: boolean;
+};
+
+export async function getHouseholdById(householdId: string): Promise<HouseholdDoc | null> {
+  const ref = doc(db, "households", householdId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+
+  const data = snap.data() as any;
+  return {
+    id: snap.id,
+    name: data.name ?? "Household",
+    createdByUid: data.createdByUid ?? "",
+    currency: data.currency,
+  };
+}
+
+export async function getHouseholdMembers(householdId: string): Promise<MemberDoc[]> {
+  const ref = collection(db, "households", householdId, "members");
+  const snap = await getDocs(ref);
+
+  return snap.docs.map((d) => {
+    const data = d.data() as any;
+    return {
+      uid: d.id,
+      displayName: data.displayName ?? "Unknown",
+      email: data.email ?? "",
+      role: data.role === "admin" ? "admin" : "member",
+      isActive: data.isActive !== false,
+    };
+  });
 }
