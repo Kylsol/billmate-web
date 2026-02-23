@@ -7,6 +7,10 @@ import {
   addDoc,
   updateDoc,
   arrayUnion,
+  getDocs,
+  query,
+  where,
+  orderBy,
 } from "firebase/firestore";
 import { db } from "./firebase";
 
@@ -93,7 +97,7 @@ export async function setPreferredName(uid: string, preferredName: string) {
 export async function createHousehold(params: {
   name: string;
   creatorUid: string;
-  creatorDisplayName: string; // for now (we'll switch to preferredName in the UI flow)
+  creatorDisplayName: string; // pass preferredName from UI
   creatorEmail: string;
 }) {
   const { name, creatorUid, creatorDisplayName, creatorEmail } = params;
@@ -126,7 +130,9 @@ export async function createHousehold(params: {
   return householdRef.id;
 }
 
-import { getDocs } from "firebase/firestore";
+/* -----------------------------
+   Household read models/helpers
+-------------------------------- */
 
 export type HouseholdDoc = {
   id: string;
@@ -143,7 +149,9 @@ export type MemberDoc = {
   isActive: boolean;
 };
 
-export async function getHouseholdById(householdId: string): Promise<HouseholdDoc | null> {
+export async function getHouseholdById(
+  householdId: string
+): Promise<HouseholdDoc | null> {
   const ref = doc(db, "households", householdId);
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
@@ -157,7 +165,9 @@ export async function getHouseholdById(householdId: string): Promise<HouseholdDo
   };
 }
 
-export async function getHouseholdMembers(householdId: string): Promise<MemberDoc[]> {
+export async function getHouseholdMembers(
+  householdId: string
+): Promise<MemberDoc[]> {
   const ref = collection(db, "households", householdId, "members");
   const snap = await getDocs(ref);
 
@@ -171,4 +181,24 @@ export async function getHouseholdMembers(householdId: string): Promise<MemberDo
       isActive: data.isActive !== false,
     };
   });
+}
+
+/* -----------------------------
+   Transactions
+-------------------------------- */
+
+/**
+ * Returns active transactions newest-first.
+ * (Bills + Payments live in one collection: households/{id}/transactions)
+ */
+export async function getHouseholdTransactions(householdId: string): Promise<any[]> {
+  const ref = collection(db, "households", householdId, "transactions");
+
+  const q = query(ref, where("status", "==", "active"), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+
+  return snap.docs.map((d) => ({
+    id: d.id,
+    ...(d.data() as any),
+  }));
 }

@@ -5,7 +5,14 @@ import { useParams, useRouter } from "next/navigation";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { signOutUser } from "@/lib/auth";
-import { getHouseholdById, getHouseholdMembers, type MemberDoc, type HouseholdDoc } from "@/lib/firestore";
+import {
+  getHouseholdById,
+  getHouseholdMembers,
+  getHouseholdTransactions,
+  type MemberDoc,
+  type HouseholdDoc,
+} from "@/lib/firestore";
+import { computeBalances } from "@/lib/balances";
 
 export default function HouseholdDashboardPage() {
   const router = useRouter();
@@ -15,6 +22,8 @@ export default function HouseholdDashboardPage() {
   const [user, setUser] = useState<User | null>(null);
   const [household, setHousehold] = useState<HouseholdDoc | null>(null);
   const [members, setMembers] = useState<MemberDoc[]>([]);
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const [balances, setBalances] = useState<Record<string, number>>({});
   const [status, setStatus] = useState<string>("Loading...");
 
   const me = useMemo(() => {
@@ -40,22 +49,33 @@ export default function HouseholdDashboardPage() {
 
         const m = await getHouseholdMembers(householdId);
 
+        // Access check
+        if (user && !m.some((x) => x.uid === user.uid)) {
+          setHousehold(h);
+          setMembers(m);
+          setStatus("You are not a member of this household.");
+          return;
+        }
+
         setHousehold(h);
         setMembers(m);
 
-        // Simple access check: if you're not a member, block
-        if (user && !m.some((x) => x.uid === user.uid)) {
-          setStatus("You are not a member of this household.");
-        } else {
-          setStatus("");
-        }
+        setStatus("Loading transactions...");
+
+        const tx = await getHouseholdTransactions(householdId);
+        setTransactions(tx);
+
+        const memberUids = m.map((x) => x.uid);
+        const b = computeBalances({ memberUids, transactions: tx });
+        setBalances(b);
+
+        setStatus("");
       } catch (e: any) {
         setStatus(e?.message ?? "Failed to load dashboard");
       }
     }
 
-    // Only load once we know auth state
-    if (user === null) return; // still loading auth
+    if (user === null) return; // auth still loading
     if (!user) {
       router.replace("/");
       return;
@@ -122,9 +142,15 @@ export default function HouseholdDashboardPage() {
                     <div className="font-medium">{m.displayName}</div>
                     <div className="text-xs text-gray-500">{m.email}</div>
                   </div>
-                  <span className="rounded bg-gray-200 px-2 py-0.5 text-xs">
-                    {m.role}
-                  </span>
+
+                  <div className="text-right">
+                    <div className="font-mono">
+                      {(balances[m.uid] ?? 0).toFixed(2)}
+                    </div>
+                    <span className="mt-1 inline-block rounded bg-gray-200 px-2 py-0.5 text-xs">
+                      {m.role}
+                    </span>
+                  </div>
                 </div>
               </button>
             ))}
@@ -132,9 +158,13 @@ export default function HouseholdDashboardPage() {
         </div>
 
         <div className="mt-6 rounded-xl bg-white p-4 shadow">
-          <h2 className="text-lg font-semibold">Balances (next)</h2>
+          <h2 className="text-lg font-semibold">Transactions (next)</h2>
           <p className="mt-2 text-sm text-gray-600">
-            Next step: load transactions and compute balances for each member.
+            Loaded: <span className="font-mono">{transactions.length}</span>{" "}
+            active transactions.
+          </p>
+          <p className="mt-2 text-sm text-gray-600">
+            Next step: Add Bill page so balances actually move.
           </p>
         </div>
       </div>
